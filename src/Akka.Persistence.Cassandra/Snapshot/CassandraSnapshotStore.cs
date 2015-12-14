@@ -142,14 +142,14 @@ namespace Akka.Persistence.Cassandra.Snapshot
             return _session.ExecuteAsync(bound);
         }
 
-        protected Task DeleteAsync(SnapshotMetadata metadata)
+        protected override Task DeleteAsync(SnapshotMetadata metadata)
         {
             IStatement bound = _deleteSnapshot.Bind(metadata.PersistenceId, metadata.SequenceNr)
                                               .SetConsistencyLevel(_cassandraExtension.SnapshotStoreSettings.WriteConsistency);
             return _session.ExecuteAsync(bound);
         }
 
-        protected async Task DeleteAsync(string persistenceId, SnapshotSelectionCriteria criteria)
+        protected override async Task DeleteAsync(string persistenceId, SnapshotSelectionCriteria criteria)
         {
             // Use a batch to delete all matching snapshots
             var batch = new BatchStatement();
@@ -189,18 +189,6 @@ namespace Akka.Persistence.Cassandra.Snapshot
         protected override void Saved(SnapshotMetadata metadata)
         {
             // No op
-        }
-
-        protected override void Delete(SnapshotMetadata metadata)
-        {
-            // Should never get called
-            throw new NotSupportedException("Deletes are handled async by this snapshot store.");
-        }
-
-        protected override void Delete(string persistenceId, SnapshotSelectionCriteria criteria)
-        {
-            // Should never get called
-            throw new NotSupportedException("Deletes are handled async by this snapshot store.");
         }
 
         protected override void PostStop()
