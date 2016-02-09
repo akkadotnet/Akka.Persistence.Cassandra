@@ -182,10 +182,14 @@ namespace Akka.Persistence.Cassandra.Journal
             return maxSequenceNumber;
         }
 
-        protected override Task WriteMessagesAsync(IEnumerable<IPersistentRepresentation> messages)
+        protected override async Task WriteMessagesAsync(IEnumerable<IPersistentRepresentation> messages)
         {
             // It's implied by the API/docs that a batch of messages will be for a single persistence id
             List<IPersistentRepresentation> messageList = messages.ToList();
+
+            if (!messageList.Any())
+                return;
+
             string persistenceId = messageList[0].PersistenceId;
 
             long seqNr = messageList[0].SequenceNr;
@@ -209,7 +213,8 @@ namespace Akka.Persistence.Cassandra.Journal
                 IPersistentRepresentation message = messageList[0];
                 IStatement statement = _writeMessage.Bind(persistenceId, partitionNumber, message.SequenceNr, Serialize(message))
                                                     .SetConsistencyLevel(_cassandraExtension.JournalSettings.WriteConsistency);
-                return _session.ExecuteAsync(statement);
+                await _session.ExecuteAsync(statement);
+                return;
             }
 
             // Use a batch and add statements for each message
@@ -224,7 +229,7 @@ namespace Akka.Persistence.Cassandra.Journal
                 batch.Add(_writeHeader.Bind(persistenceId, partitionNumber, seqNr));
 
             batch.SetConsistencyLevel(_cassandraExtension.JournalSettings.WriteConsistency);
-            return _session.ExecuteAsync(batch);
+            await _session.ExecuteAsync(batch);
         }
 
         protected override async Task DeleteMessagesToAsync(string persistenceId, long toSequenceNr, bool isPermanent)
