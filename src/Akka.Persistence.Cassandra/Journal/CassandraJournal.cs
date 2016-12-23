@@ -192,7 +192,7 @@ namespace Akka.Persistence.Cassandra.Journal
         }
 
 
-        protected override async Task<IImmutableList<Exception>> WriteMessagesAsync(IEnumerable<AtomicWrite> messages)
+        protected override Task<IImmutableList<Exception>> WriteMessagesAsync(IEnumerable<AtomicWrite> messages)
         {
             // It's implied by the API/docs that a batch of messages will be for a single persistence id
             var messageList = messages.ToList();
@@ -202,7 +202,7 @@ namespace Akka.Persistence.Cassandra.Journal
 
             string persistenceId = messageList[0].PersistenceId;
 
-            long seqNr = ((IPersistentRepresentation)messageList[0].Payload).SequenceNr;
+            long seqNr = ((IImmutableList<IPersistentRepresentation>)messageList[0].Payload)[0].SequenceNr;
             bool writeHeader = IsNewPartition(seqNr);
             long partitionNumber = GetPartitionNumber(seqNr);
 
@@ -210,7 +210,7 @@ namespace Akka.Persistence.Cassandra.Journal
             {
                 var messagesList = ((IImmutableList<IPersistentRepresentation>)messages).ToArray();
                 // See if this collection of writes would span multiple partitions and if so, move all the writes to the next partition
-                long lastMessagePartition = GetPartitionNumber(((IPersistentRepresentation)messageList[messageList.Count - 1].Payload).SequenceNr);
+                long lastMessagePartition = GetPartitionNumber(((IImmutableList<IPersistentRepresentation>)messageList[messageList.Count - 1].Payload)[0].SequenceNr);
                 if (lastMessagePartition != partitionNumber)
                 {
                     partitionNumber = lastMessagePartition;
@@ -221,18 +221,22 @@ namespace Akka.Persistence.Cassandra.Journal
             // No need for a batch if writing a single message
             if (messageList.Count == 1 && writeHeader == false)
             {
-                IPersistentRepresentation message = (IPersistentRepresentation)messageList[0].Payload;
+                IPersistentRepresentation message = ((IImmutableList<IPersistentRepresentation>)messageList[0].Payload)[0];
                 IStatement statement = _writeMessage.Bind(persistenceId, partitionNumber, message.SequenceNr, Serialize(message))
                                                     .SetConsistencyLevel(_cassandraExtension.JournalSettings.WriteConsistency);
-                await _session.ExecuteAsync(statement);
-                
+                Task[] taskArr1 = new Task[1];
+                taskArr1[0] = _session.ExecuteAsync(statement);
+                return Task<IImmutableList<Exception>>
+                            .Factory
+                            .ContinueWhenAll(taskArr1,
+                            tasks => tasks.Select(t => t.IsFaulted ? TryUnwrapException(t.Exception) : null).ToImmutableList());
             }
 
             // Use a batch and add statements for each message
             var batch = new BatchStatement();
             foreach (AtomicWrite message in messageList)
             {
-                batch.Add(_writeMessage.Bind(message.PersistenceId, partitionNumber, ((IPersistentRepresentation)message.Payload).SequenceNr, Serialize((IPersistentRepresentation)message.Payload)));
+                batch.Add(_writeMessage.Bind(message.PersistenceId, partitionNumber, ((IImmutableList<IPersistentRepresentation>)message.Payload)[0].SequenceNr, Serialize(((IImmutableList<IPersistentRepresentation>)message.Payload)[0])));
             }
 
             // Add header if necessary
@@ -243,7 +247,7 @@ namespace Akka.Persistence.Cassandra.Journal
 
             Task[] taskArr = new Task[1];
             taskArr[0] = _session.ExecuteAsync(batch);
-            return await Task <IImmutableList<Exception>>
+            return Task <IImmutableList<Exception>>
                             .Factory
                             .ContinueWhenAll(taskArr,
                             tasks => tasks.Select(t => t.IsFaulted ? TryUnwrapException(t.Exception) : null).ToImmutableList());
