@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using System.Threading.Tasks;
+using Akka.Actor;
 using Akka.Configuration;
 using Akka.Persistence.Journal;
 using Akka.Serialization;
@@ -42,7 +44,7 @@ namespace Akka.Persistence.Cassandra.Journal
 
             // Use setting from the persistence extension when batch deleting
             PersistenceExtension persistence = Context.System.PersistenceExtension();
-            _maxDeletionBatchSize = persistence.Settings.Journal.MaxDeletionBatchSize;
+            //_maxDeletionBatchSize = persistence.Settings.Journal.MaxDeletionBatchSize;
         }
         
         protected override void PreStart()
@@ -56,7 +58,7 @@ namespace Akka.Persistence.Cassandra.Journal
             // Create keyspace if necessary and always try to create table
             if (settings.KeyspaceAutocreate)
                 _session.Execute(string.Format(JournalStatements.CreateKeyspace, settings.Keyspace, settings.KeyspaceCreationOptions));
-
+            
             var fullyQualifiedTableName = string.Format("{0}.{1}", settings.Keyspace, settings.Table);
 
             string createTable = string.IsNullOrWhiteSpace(settings.TableCreationProperties)
@@ -64,7 +66,7 @@ namespace Akka.Persistence.Cassandra.Journal
                                      : string.Format(JournalStatements.CreateTable, fullyQualifiedTableName, " WITH ",
                                                      settings.TableCreationProperties);
             _session.Execute(createTable);
-
+            
             // Prepare some statements against C*
             _writeMessage = _session.PrepareFormat(JournalStatements.WriteMessage, fullyQualifiedTableName);
             _writeHeader = _session.PrepareFormat(JournalStatements.WriteHeader, fullyQualifiedTableName);
@@ -90,7 +92,7 @@ namespace Akka.Persistence.Cassandra.Journal
             }
         }
 
-        public override async Task ReplayMessagesAsync(string persistenceId, long fromSequenceNr, long toSequenceNr, long max,
+        public override async Task ReplayMessagesAsync(IActorContext context, string persistenceId, long fromSequenceNr, long toSequenceNr, long max,
                                                        Action<IPersistentRepresentation> replayCallback)
         {
             long partitionNumber = GetPartitionNumber(fromSequenceNr);
@@ -131,7 +133,6 @@ namespace Akka.Persistence.Cassandra.Journal
                     IEnumerator<IPersistentRepresentation> messagesEnumerator =
                         messageRows.Select(row => MapRowToPersistentRepresentation(row, deletedTo))
                                    .GetEnumerator();
-
                     // Process page
                     while (count < max && messagesEnumerator.MoveNext())
                     {
@@ -143,7 +144,15 @@ namespace Akka.Persistence.Cassandra.Journal
                 // Go to next partition
                 partitionNumber++;
             }
+
+
         }
+
+        private Persistent ToPersistenceRepresentation(JournalEntry entry, IActorRef sender)
+        { 
+             return new Persistent(entry.Payload, entry.SequenceNr, entry.PersistenceId, entry.Manifest, entry.IsDeleted, sender); 
+        }
+        
 
         public override async Task<long> ReadHighestSequenceNrAsync(string persistenceId, long fromSequenceNr)
         {
@@ -182,24 +191,26 @@ namespace Akka.Persistence.Cassandra.Journal
             return maxSequenceNumber;
         }
 
-        protected override async Task WriteMessagesAsync(IEnumerable<IPersistentRepresentation> messages)
+
+        protected override Task<IImmutableList<Exception>> WriteMessagesAsync(IEnumerable<AtomicWrite> messages)
         {
             // It's implied by the API/docs that a batch of messages will be for a single persistence id
-            List<IPersistentRepresentation> messageList = messages.ToList();
+            var messageList = messages.ToList();
 
             if (!messageList.Any())
-                return;
+                return null;
 
             string persistenceId = messageList[0].PersistenceId;
 
-            long seqNr = messageList[0].SequenceNr;
+            long seqNr = ((IImmutableList<IPersistentRepresentation>)messageList[0].Payload)[0].SequenceNr;
             bool writeHeader = IsNewPartition(seqNr);
             long partitionNumber = GetPartitionNumber(seqNr);
 
             if (messageList.Count > 1)
             {
+                var messagesList = ((IImmutableList<IPersistentRepresentation>)messages).ToArray();
                 // See if this collection of writes would span multiple partitions and if so, move all the writes to the next partition
-                long lastMessagePartition = GetPartitionNumber(messageList[messageList.Count - 1].SequenceNr);
+                long lastMessagePartition = GetPartitionNumber(((IImmutableList<IPersistentRepresentation>)messageList[messageList.Count - 1].Payload)[0].SequenceNr);
                 if (lastMessagePartition != partitionNumber)
                 {
                     partitionNumber = lastMessagePartition;
@@ -210,18 +221,22 @@ namespace Akka.Persistence.Cassandra.Journal
             // No need for a batch if writing a single message
             if (messageList.Count == 1 && writeHeader == false)
             {
-                IPersistentRepresentation message = messageList[0];
+                IPersistentRepresentation message = ((IImmutableList<IPersistentRepresentation>)messageList[0].Payload)[0];
                 IStatement statement = _writeMessage.Bind(persistenceId, partitionNumber, message.SequenceNr, Serialize(message))
                                                     .SetConsistencyLevel(_cassandraExtension.JournalSettings.WriteConsistency);
-                await _session.ExecuteAsync(statement);
-                return;
+                Task[] taskArr1 = new Task[1];
+                taskArr1[0] = _session.ExecuteAsync(statement);
+                return Task<IImmutableList<Exception>>
+                            .Factory
+                            .ContinueWhenAll(taskArr1,
+                            tasks => tasks.Select(t => t.IsFaulted ? TryUnwrapException(t.Exception) : null).ToImmutableList());
             }
 
             // Use a batch and add statements for each message
             var batch = new BatchStatement();
-            foreach (IPersistentRepresentation message in messageList)
+            foreach (AtomicWrite message in messageList)
             {
-                batch.Add(_writeMessage.Bind(message.PersistenceId, partitionNumber, message.SequenceNr, Serialize(message)));
+                batch.Add(_writeMessage.Bind(message.PersistenceId, partitionNumber, ((IImmutableList<IPersistentRepresentation>)message.Payload)[0].SequenceNr, Serialize(((IImmutableList<IPersistentRepresentation>)message.Payload)[0])));
             }
 
             // Add header if necessary
@@ -229,10 +244,17 @@ namespace Akka.Persistence.Cassandra.Journal
                 batch.Add(_writeHeader.Bind(persistenceId, partitionNumber, seqNr));
 
             batch.SetConsistencyLevel(_cassandraExtension.JournalSettings.WriteConsistency);
-            await _session.ExecuteAsync(batch);
+
+            Task[] taskArr = new Task[1];
+            taskArr[0] = _session.ExecuteAsync(batch);
+            return Task <IImmutableList<Exception>>
+                            .Factory
+                            .ContinueWhenAll(taskArr,
+                            tasks => tasks.Select(t => t.IsFaulted ? TryUnwrapException(t.Exception) : null).ToImmutableList());
+
         }
 
-        protected override async Task DeleteMessagesToAsync(string persistenceId, long toSequenceNr, bool isPermanent)
+        protected override async Task DeleteMessagesToAsync(string persistenceId, long toSequenceNr)
         {
             long maxPartitionNumber = GetPartitionNumber(toSequenceNr) + 1L;
             long partitionNumber = 0L;
@@ -252,7 +274,7 @@ namespace Akka.Persistence.Cassandra.Journal
                 long deleteFrom = deletedToRow == null
                                       ? headerRow.GetValue<long>("sequence_number")
                                       : deletedToRow.GetValue<long>("sequence_number") + 1L;
-                
+
                 // Nothing to delete if we're going to start higher than the specified sequence number
                 if (deleteFrom > toSequenceNr)
                     return;
@@ -261,28 +283,21 @@ namespace Akka.Persistence.Cassandra.Journal
                 IStatement getLastMessageSequence = _selectLastMessageSequence.Bind(persistenceId, partitionNumber, deleteFrom)
                                                                               .SetConsistencyLevel(_cassandraExtension.JournalSettings.ReadConsistency);
                 RowSet lastSequenceRows = await _session.ExecuteAsync(getLastMessageSequence).ConfigureAwait(false);
-                
+
                 // If we have a sequence number, we've got messages to delete still in the partition
                 Row lastSequenceRow = lastSequenceRows.SingleOrDefault();
                 if (lastSequenceRow != null)
                 {
                     // Delete either to the end of the partition or to the number specified, whichever comes first
                     long deleteTo = Math.Min(lastSequenceRow.GetValue<long>("sequence_number"), toSequenceNr);
-                    if (isPermanent == false)
+
+                    // Permanently delete using batches in parallel
+                    long batchFrom = deleteFrom;
+                    long batchTo;
+                    var batches = new List<Task>();
+                    do
                     {
-                        IStatement writeMarker = _writeDeleteMarker.Bind(persistenceId, partitionNumber, deleteTo)
-                                                                   .SetConsistencyLevel(_cassandraExtension.JournalSettings.WriteConsistency);
-                        await _session.ExecuteAsync(writeMarker).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        // Permanently delete using batches in parallel
-                        long batchFrom = deleteFrom;
-                        long batchTo;
-                        var batches = new List<Task>();
-                        do
-                        {
-                            batchTo = Math.Min(batchFrom + _maxDeletionBatchSize - 1L, deleteTo);
+                           batchTo = Math.Min(batchFrom + _maxDeletionBatchSize - 1L, deleteTo);
 
                             var batch = new BatchStatement();
                             for (long seq = batchFrom; seq <= batchTo; seq++)
@@ -293,16 +308,16 @@ namespace Akka.Persistence.Cassandra.Journal
 
                             batches.Add(_session.ExecuteAsync(batch));
                             batchFrom = batchTo + 1L;
-                        } while (batchTo < deleteTo);
+                    } while (batchTo < deleteTo);
 
-                        await Task.WhenAll(batches).ConfigureAwait(false);
-                    }
+                    await Task.WhenAll(batches).ConfigureAwait(false);
                     
+
                     // If we've deleted everything we're supposed to, no need to continue
                     if (deleteTo == toSequenceNr)
                         return;
                 }
-                
+
                 // Go to next partition
                 partitionNumber++;
             }
@@ -321,7 +336,7 @@ namespace Akka.Persistence.Cassandra.Journal
         {
             IPersistentRepresentation pr = Deserialize(row.GetValue<byte[]>("message"));
             if (pr.SequenceNr <= deletedTo)
-                pr = pr.Update(pr.SequenceNr, pr.PersistenceId, true, pr.Sender);
+                pr = pr.Update(pr.SequenceNr, pr.PersistenceId, true, pr.Sender, pr.WriterGuid);
 
             return pr;
         }
