@@ -5,6 +5,7 @@
 open System
 open System.IO
 open System.Text
+open System.Configuration;
 open Fake
 open Fake.FileUtils
 open Fake.TaskRunnerHelper
@@ -51,7 +52,7 @@ let testOutput = "TestResults"
 let nugetDir = binDir @@ "nuget"
 let workingDir = binDir @@ "build"
 let libDir = workingDir @@ @"lib\net45\"
-let nugetExe = FullName @"src\.nuget\NuGet.exe"
+let nugetExe = FullName @"src\.nuget\nuget.exe"
 let slnFile = "./src/Akka.Persistence.Cassandra.sln"
 
 open Fake.RestorePackageHelper
@@ -130,11 +131,21 @@ Target "RunTests" <| fun _ ->
 
     mkdir testOutput
 
-    let xunitToolPath = findToolInSubPath "xunit.console.exe" "src/packages/xunit.runner.console*/tools"
+    let xunitToolPath = findToolInSubPath "xunit.console.exe" "src/packages/FAKE/xunit.runner.console*/tools"
     printfn "Using XUnit runner: %s" xunitToolPath
     xUnit2
         (fun p -> { p with OutputDir = testOutput; ToolPath = xunitToolPath })
         xunitTestAssemblies
+
+Target "PrepAppConfig" <| fun _ ->
+    let ip = environVarOrNone "CONTAINER_IP"   
+    match ip with
+    | Some ip ->
+        log ("Preparing app.config for connection to akka-cassandra-db docker container....")
+        log ("CONTAINER_IP=" + ip)
+        let appConfig = @"src/Akka.Persistence.Cassandra.Tests/bin/Release/Akka.Persistence.Cassandra.Tests.dll.config"    
+        updateAppSetting "cassandraContactPoint" ip appConfig
+    | None -> failwith "CONTAINER_IP environment variable not set, check preceding container startup logs"
 
 //--------------------------------------------------------------------------------
 // Nuget targets 
@@ -421,7 +432,7 @@ Target "HelpDocs" <| fun _ ->
 //--------------------------------------------------------------------------------
 
 // build dependencies
-"Clean" ==> "AssemblyInfo" ==> "RestorePackages" ==> "UpdateDependencies" ==> "Build" ==> "CopyOutput" ==> "BuildRelease"
+"Clean" ==> "AssemblyInfo" ==> "RestorePackages" ==> "Build" ==> "CopyOutput" ==> "BuildRelease"
 
 // tests dependencies
 "CleanTests" ==> "RunTests"

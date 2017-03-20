@@ -4,6 +4,7 @@ using Akka.Configuration;
 using Akka.TestKit;
 using Akka.Util.Internal;
 using Xunit;
+using System.Configuration;
 
 namespace Akka.Persistence.Cassandra.Tests
 {
@@ -12,13 +13,14 @@ namespace Akka.Persistence.Cassandra.Tests
     /// </summary>
     public class CassandraIntegrationSpec : Akka.TestKit.Xunit2.TestKit
     {
-        private static readonly Config IntegrationConfig = ConfigurationFactory.ParseString(@"
+        private static readonly Config IntegrationConfig = ConfigurationFactory.ParseString($@"
             akka.persistence.journal.plugin = ""cassandra-journal""
             akka.persistence.snapshot-store.plugin = ""cassandra-snapshot-store""
             akka.persistence.publish-plugin-commands = on
             akka.test.single-expect-default = 10s
             cassandra-journal.partition-size = 5
             cassandra-journal.max-result-size = 3
+            cassandra-sessions.default.contact-points = [ ""{ ConfigurationManager.AppSettings["cassandraContactPoint"] }"" ]
         ");
 
         // Static so that each test run gets a different Id number
