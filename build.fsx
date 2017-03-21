@@ -435,7 +435,7 @@ Target "HelpDocs" <| fun _ ->
 "Clean" ==> "AssemblyInfo" ==> "RestorePackages" ==> "Build" ==> "CopyOutput" ==> "BuildRelease"
 
 // tests dependencies
-"CleanTests" ==> "RunTests"
+"CleanTests" ==> "PrepAppConfig" ==> "RunTests"
 
 // nuget dependencies
 "CleanNuget" ==> "CreateNuget"
