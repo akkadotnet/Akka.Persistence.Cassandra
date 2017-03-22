@@ -1,6 +1,7 @@
 ﻿using System.Configuration;
 using Akka.Configuration;
 using Akka.Persistence.TestKit.Journal;
+using Xunit.Abstractions;
 
 namespace Akka.Persistence.Cassandra.Tests
 {
@@ -12,8 +13,8 @@ namespace Akka.Persistence.Cassandra.Tests
             cassandra-sessions.default.contact-points = [ ""{ ConfigurationManager.AppSettings["cassandraContactPoint"] }"" ]
         ");
 
-        public CassandraJournalSpec()
-            : base(JournalConfig, "CassandraJournalSystem")
+        public CassandraJournalSpec(ITestOutputHelper output)
+            : base(JournalConfig, "CassandraJournalSystem", output: output)
         {
             TestSetupHelpers.ResetJournalData(Sys);
             Initialize();

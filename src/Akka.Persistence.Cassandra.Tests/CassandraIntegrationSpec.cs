@@ -5,6 +5,7 @@ using Akka.TestKit;
 using Akka.Util.Internal;
 using Xunit;
 using System.Configuration;
+using Xunit.Abstractions;
 
 namespace Akka.Persistence.Cassandra.Tests
 {
@@ -28,8 +29,8 @@ namespace Akka.Persistence.Cassandra.Tests
 
         private readonly string _actorId;
 
-        public CassandraIntegrationSpec()
-            : base(IntegrationConfig, "CassandraIntegration")
+        public CassandraIntegrationSpec(ITestOutputHelper output)
+            : base(IntegrationConfig, "CassandraIntegration", output: output)
         {
             TestSetupHelpers.ResetJournalData(Sys);
             TestSetupHelpers.ResetSnapshotStoreData(Sys);

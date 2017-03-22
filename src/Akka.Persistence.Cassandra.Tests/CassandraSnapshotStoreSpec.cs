@@ -1,6 +1,7 @@
 ﻿using Akka.Configuration;
 using Akka.Persistence.TestKit.Snapshot;
 using System.Configuration;
+using Xunit.Abstractions;
 
 namespace Akka.Persistence.Cassandra.Tests
 {
@@ -12,8 +13,8 @@ namespace Akka.Persistence.Cassandra.Tests
             cassandra-sessions.default.contact-points = [ ""{ ConfigurationManager.AppSettings["cassandraContactPoint"] }"" ]
         ");
 
-        public CassandraSnapshotStoreSpec()
-            : base(SnapshotConfig, "CassandraSnapshotSystem")
+        public CassandraSnapshotStoreSpec(ITestOutputHelper output)
+            : base(SnapshotConfig, "CassandraSnapshotSystem", output: output)
         {
             TestSetupHelpers.ResetSnapshotStoreData(Sys);
             Initialize();
