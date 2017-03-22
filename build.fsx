@@ -135,7 +135,9 @@ Target "RunTests" <| fun _ ->
     printfn "Using XUnit runner: %s" xunitToolPath
     xUnit2
         (fun p -> { p with HtmlOutputPath = Some(testOutput @@ "xunit.html")
-                           ForceTeamCity = true })
+                           Parallel = NoParallelization
+                           ForceTeamCity = true 
+                           })
         xunitTestAssemblies
 
 Target "PrepAppConfig" <| fun _ ->
